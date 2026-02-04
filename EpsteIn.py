@@ -68,7 +68,7 @@ def parse_linkedin_contacts(csv_path):
     return contacts
 
 
-def search_epstein_files(name, max_retries=1):
+def search_epstein_files(name):
     """
     Search the Epstein files API for a name.
     Returns the total number of hits and hit details.
@@ -78,26 +78,19 @@ def search_epstein_files(name, max_retries=1):
     encoded_name = urllib.parse.quote(quoted_name)
     url = f"{API_BASE_URL}?q={encoded_name}&indexes=epstein_files"
 
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            data = response.json()
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
 
-            if data.get('success'):
-                return {
-                    'total_hits': data.get('data', {}).get('totalHits', 0),
-                    'hits': data.get('data', {}).get('hits', [])
-                }
-            else:
-                return {'total_hits': 0, 'hits': []}
-
-        except requests.exceptions.RequestException as e:
-            if attempt < max_retries - 1:
-                time.sleep(1)  # Brief delay before retry
-                continue
-            print(f"Warning: API request failed for '{name}': {e}", file=sys.stderr)
-            return {'total_hits': 0, 'hits': [], 'error': str(e)}
+        if data.get('success'):
+            return {
+                'total_hits': data.get('data', {}).get('totalHits', 0),
+                'hits': data.get('data', {}).get('hits', [])
+            }
+    except requests.exceptions.RequestException as e:
+        print(f"Warning: API request failed for '{name}': {e}", file=sys.stderr)
+        return {'total_hits': 0, 'hits': [], 'error': str(e)}
 
     return {'total_hits': 0, 'hits': []}
 
