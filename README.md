@@ -22,7 +22,7 @@ pip install -r requirements.txt
 3. Select **Settings & Privacy**
 4. Click **Data privacy** in the left sidebar
 5. Under "How LinkedIn uses your data", click **Get a copy of your data**
-6. Select **Connections** (or click "Want something in particular?" and check Connections)
+6. Select **Connections** (or click "Want something in particular?" and check Connections). If **Connections** isn't listed as an option, choose the **Download larger data archive** option.
 7. Click **Request archive**
 8. Wait for LinkedIn's email (may take up to 24 hours)
 9. Download and extract the ZIP file
