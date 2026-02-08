@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Search Epstein files for mentions of LinkedIn connections.
+Search Epstein files for mentions of your contacts (LinkedIn and/or X/Twitter).
 
 Usage:
     python EpsteIn.py --connections <linkedin_csv> [--output <report.html>]
+    python EpsteIn.py --x-following <following.js> --x-bearer-token <token>
 
 Prerequisites:
     pip install requests
@@ -13,6 +14,7 @@ import argparse
 import base64
 import csv
 import html
+import json
 import os
 import sys
 import time
@@ -68,6 +70,106 @@ def parse_linkedin_contacts(csv_path):
                     'company': row.get('Company', ''),
                     'position': row.get('Position', '')
                 })
+
+    return contacts
+
+
+def parse_x_following(js_path):
+    """
+    Parse X/Twitter data export following.js file.
+    Returns a list of account ID strings.
+    """
+    with open(js_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Strip the JS variable assignment prefix
+    prefix = 'window.YTD.following.part0 = '
+    if not content.startswith(prefix):
+        print(f"Error: {js_path} doesn't look like an X/Twitter following.js export.", file=sys.stderr)
+        print(f"Expected file to start with: {prefix}", file=sys.stderr)
+        sys.exit(1)
+
+    json_str = content[len(prefix):]
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"Error: Failed to parse JSON in {js_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    account_ids = []
+    for entry in data:
+        following = entry.get('following', {})
+        account_id = following.get('accountId', '')
+        if account_id:
+            account_ids.append(account_id)
+
+    return account_ids
+
+
+def resolve_x_ids_to_names(account_ids, bearer_token):
+    """
+    Resolve X/Twitter account IDs to display names via the X API v2.
+    Returns contact dicts matching the shape used by parse_linkedin_contacts.
+    """
+    contacts = []
+    # API allows max 100 IDs per request
+    batch_size = 100
+
+    for i in range(0, len(account_ids), batch_size):
+        batch = account_ids[i:i + batch_size]
+        ids_param = ','.join(batch)
+        url = f"https://api.x.com/2/users?ids={ids_param}"
+        headers = {'Authorization': f'Bearer {bearer_token}'}
+
+        delay = 1
+        while True:
+            try:
+                response = requests.get(url, headers=headers, timeout=30)
+
+                if response.status_code == 401:
+                    print("Error: X API authentication failed. Check your bearer token.", file=sys.stderr)
+                    sys.exit(1)
+                if response.status_code == 403:
+                    print("Error: X API access forbidden. Your bearer token may lack the required permissions.", file=sys.stderr)
+                    sys.exit(1)
+                if response.status_code == 429:
+                    retry_after = response.headers.get('Retry-After')
+                    wait = int(retry_after) if retry_after else delay
+                    print(f"  [X API rate limited, retrying in {wait}s]", flush=True)
+                    time.sleep(wait)
+                    delay *= 2
+                    continue
+
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as e:
+                print(f"Error: X API request failed: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        data = response.json()
+
+        # Warn about suspended/deleted accounts
+        for error in data.get('errors', []):
+            print(f"  Warning: {error.get('detail', 'Unknown error for account')}", file=sys.stderr)
+
+        for user in data.get('data', []):
+            name = user.get('name', '').strip()
+            if not name:
+                continue
+
+            parts = name.split(None, 1)
+            first_name = parts[0]
+            last_name = parts[1] if len(parts) > 1 else ''
+            handle = user.get('username', '')
+
+            contacts.append({
+                'first_name': first_name,
+                'last_name': last_name,
+                'full_name': name,
+                'company': '',
+                'position': f'@{handle}' if handle else ''
+            })
 
     return contacts
 
@@ -131,7 +233,7 @@ def generate_html_report(results, output_path):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EpsteIn: Which LinkedIn Connections Appear in the Epstein Files?</title>
+    <title>EpsteIn: Which of Your Contacts Appear in the Epstein Files?</title>
     <style>
         * {{
             box-sizing: border-box;
@@ -233,8 +335,8 @@ def generate_html_report(results, output_path):
     {logo_html}
 
     <div class="summary">
-        <strong>Total connections searched:</strong> {len(results)}<br>
-        <strong>Connections with mentions:</strong> {contacts_with_mentions}
+        <strong>Total contacts searched:</strong> {len(results)}<br>
+        <strong>Contacts with mentions:</strong> {contacts_with_mentions}
     </div>
 """
 
@@ -303,12 +405,23 @@ def main():
         sys.exit(1)
 
     parser = argparse.ArgumentParser(
-        description='Search Epstein files for mentions of LinkedIn connections'
+        description='Search Epstein files for mentions of your contacts'
     )
     parser.add_argument(
         '--connections', '-c',
         required=False,
         help='Path to LinkedIn connections CSV export'
+    )
+    parser.add_argument(
+        '--x-following',
+        required=False,
+        help='Path to X/Twitter data export following.js file'
+    )
+    parser.add_argument(
+        '--x-bearer-token',
+        required=False,
+        default=os.environ.get('X_BEARER_TOKEN'),
+        help='X API bearer token (or set X_BEARER_TOKEN env var)'
     )
     parser.add_argument(
         '--output', '-o',
@@ -317,39 +430,76 @@ def main():
     )
     args = parser.parse_args()
 
-    # Validate inputs
-    if not args.connections:
+    # Validate inputs — require at least one source
+    if not args.connections and not args.x_following:
         print("""
-No connections file specified.
+No contact source specified. Provide at least one:
+
+  LinkedIn:
+     python EpsteIn.py --connections /path/to/Connections.csv
+
+  X/Twitter:
+     python EpsteIn.py --x-following /path/to/following.js --x-bearer-token YOUR_TOKEN
+
+  Both:
+     python EpsteIn.py --connections Connections.csv --x-following following.js --x-bearer-token YOUR_TOKEN
 
 To export your LinkedIn connections:
   1. Go to linkedin.com and log in
-  2. Click your profile icon in the top right
-  3. Select "Settings & Privacy"
-  4. Click "Data privacy" in the left sidebar
-  5. Under "How LinkedIn uses your data", click "Get a copy of your data"
-  6. Select "Connections" (or "Want something in particular?" and check Connections)
-  7. Click "Request archive"
-  8. Wait for LinkedIn's email (may take up to 24 hours)
-  9. Download and extract the ZIP file
-  10. Use the Connections.csv file with this script:
+  2. Click your profile icon > Settings & Privacy > Data privacy
+  3. Click "Get a copy of your data" and select Connections
+  4. Download and extract the ZIP file
 
-     python EpsteIn.py --connections /path/to/Connections.csv
+To export your X/Twitter following list:
+  1. Go to x.com > Settings > Your Account > Download an archive of your data
+  2. Wait for X's email, then download and extract the archive
+  3. Locate data/following.js in the extracted archive
 """)
         sys.exit(1)
 
-    if not os.path.exists(args.connections):
-        print(f"Error: Connections file not found: {args.connections}", file=sys.stderr)
+    if args.x_following and not args.x_bearer_token:
+        print("Error: --x-bearer-token (or X_BEARER_TOKEN env var) is required when using --x-following.", file=sys.stderr)
         sys.exit(1)
+
+    contacts = []
 
     # Parse LinkedIn connections
-    print(f"Reading LinkedIn connections from: {args.connections}")
-    contacts = parse_linkedin_contacts(args.connections)
-    print(f"Found {len(contacts)} connections")
+    if args.connections:
+        if not os.path.exists(args.connections):
+            print(f"Error: Connections file not found: {args.connections}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Reading LinkedIn connections from: {args.connections}")
+        linkedin_contacts = parse_linkedin_contacts(args.connections)
+        print(f"Found {len(linkedin_contacts)} LinkedIn connections")
+        contacts.extend(linkedin_contacts)
+
+    # Parse X/Twitter following
+    if args.x_following:
+        if not os.path.exists(args.x_following):
+            print(f"Error: Following file not found: {args.x_following}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Reading X/Twitter following from: {args.x_following}")
+        account_ids = parse_x_following(args.x_following)
+        print(f"Found {len(account_ids)} followed accounts, resolving names via X API...")
+        x_contacts = resolve_x_ids_to_names(account_ids, args.x_bearer_token)
+        print(f"Resolved {len(x_contacts)} X/Twitter accounts")
+        contacts.extend(x_contacts)
+
+    # Deduplicate by name (case-insensitive), keeping first occurrence
+    seen_names = set()
+    unique_contacts = []
+    for contact in contacts:
+        key = contact['full_name'].lower()
+        if key not in seen_names:
+            seen_names.add(key)
+            unique_contacts.append(contact)
+    contacts = unique_contacts
 
     if not contacts:
-        print("No connections found in CSV. Check the file format.", file=sys.stderr)
+        print("No contacts found. Check your input files.", file=sys.stderr)
         sys.exit(1)
+
+    print(f"Total unique contacts to search: {len(contacts)}")
 
     # Search for each contact
     print("Searching Epstein files API...")
@@ -400,15 +550,15 @@ To export your LinkedIn connections:
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
-    print(f"Total connections searched: {len(results)}")
-    print(f"Connections with mentions: {len(contacts_with_mentions)}")
+    print(f"Total contacts searched: {len(results)}")
+    print(f"Contacts with mentions: {len(contacts_with_mentions)}")
 
     if contacts_with_mentions:
         print(f"\nTop mentions:")
         for r in contacts_with_mentions[:20]:
             print(f"  {r['total_mentions']:6,} - {r['name']}")
     else:
-        print("\nNo connections found in the Epstein files.")
+        print("\nNo contacts found in the Epstein files.")
 
     print(f"\nFull report saved to: {args.output}")
 
