@@ -15,9 +15,11 @@ import csv
 import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
+from datetime import datetime
 
 try:
     import requests
@@ -205,17 +207,78 @@ def search_epstein_files(name, delay):
             if data.get('success'):
                 return {
                     'total_hits': data.get('data', {}).get('totalHits', 0),
-                    'hits': data.get('data', {}).get('hits', [])
+                    'hits': data.get('data', {}).get('hits', []),
+                    'error': None
                 }, delay
         except requests.exceptions.RequestException as e:
-            print(f"Warning: API request failed for '{name}': {e}", file=sys.stderr)
             return {'total_hits': 0, 'hits': [], 'error': str(e)}, delay
 
-        return {'total_hits': 0, 'hits': []}, delay
+        return {'total_hits': 0, 'hits': [], 'error': None}, delay
 
 
-def generate_html_report(results, output_path):
+def highlight_name_in_preview(preview_text, first_name, last_name):
+    """
+    Highlight contact name parts in a preview string using <mark> tags.
+    Matches full name first, then last name, then first name (2+ chars).
+    """
+    full_name = f"{first_name} {last_name}"
+    highlighted = html.escape(preview_text)
+
+    # Full name match
+    pattern = re.compile(re.escape(html.escape(full_name)), re.IGNORECASE)
+    highlighted = pattern.sub(
+        lambda m: f'<mark>{m.group(0)}</mark>', highlighted
+    )
+
+    # Last name match (word boundary, skip if already inside <mark>)
+    if last_name and len(last_name) >= 2:
+        pattern = re.compile(
+            r'(?<!<mark>)\b(' + re.escape(html.escape(last_name)) + r')\b(?!</mark>)',
+            re.IGNORECASE
+        )
+        highlighted = pattern.sub(r'<mark>\1</mark>', highlighted)
+
+    # First name match (word boundary, 2+ chars, skip if already inside <mark>)
+    if first_name and len(first_name) >= 2:
+        pattern = re.compile(
+            r'(?<!<mark>)\b(' + re.escape(html.escape(first_name)) + r')\b(?!</mark>)',
+            re.IGNORECASE
+        )
+        highlighted = pattern.sub(r'<mark>\1</mark>', highlighted)
+
+    return highlighted
+
+
+def print_progress_bar(current, total, name, hits, is_tty):
+    """
+    Print a progress bar for CLI output.
+    Falls back to line-by-line when not a TTY.
+    """
+    if not is_tty:
+        print(f"  [{current}/{total}] {name} -> {hits} hits", flush=True)
+        return
+
+    percent = current / total
+    bar_width = 30
+    filled = int(bar_width * percent)
+    bar = '#' * filled + '-' * (bar_width - filled)
+
+    # Truncate name to fit in terminal
+    max_name_len = 30
+    display_name = name if len(name) <= max_name_len else name[:max_name_len - 3] + '...'
+
+    line = f"\r  [{bar}] {percent:>4.0%} ({current}/{total}) {display_name} -> {hits} hits"
+    # Pad with spaces to clear previous longer lines
+    print(f"{line:<80}", end='', flush=True)
+
+
+def generate_html_report(results, output_path, total_contacts=None, was_interrupted=False):
     contacts_with_mentions = len([r for r in results if r['total_mentions'] > 0])
+    total_searched = len(results)
+    if total_contacts is None:
+        total_contacts = total_searched
+    total_hits = sum(r['total_mentions'] for r in results)
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     logo_html = """<div class="logo" role="img" aria-label="EpsteIn">
         <span class="logo-icon">E</span>
@@ -228,6 +291,56 @@ def generate_html_report(results, output_path):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EpsteIn: Which of Your Contacts Appear in the Epstein Files?</title>
     <style>
+        :root {{
+            --bg-primary: #f5f5f5;
+            --bg-card: #fff;
+            --bg-hit: #f9f9f9;
+            --text-primary: #333;
+            --text-secondary: #555;
+            --text-preview: #444;
+            --text-muted: #6b6b6b;
+            --border-light: #eee;
+            --border-medium: #ddd;
+            --accent-blue: #3498db;
+            --accent-red: #e74c3c;
+            --shadow-color: rgba(0,0,0,0.1);
+            --logo-bg: #000;
+            --logo-text: #fff;
+            --highlight-bg: #fff3cd;
+            --highlight-dark-bg: #b8860b;
+            --search-bg: #fff;
+            --search-border: #ddd;
+            --toggle-bg: transparent;
+            --toggle-border: #3498db;
+            --toggle-text: #3498db;
+        }}
+
+        @media (prefers-color-scheme: dark) {{
+            :root {{
+                --bg-primary: #1a1a2e;
+                --bg-card: #16213e;
+                --bg-hit: #0f3460;
+                --text-primary: #e0e0e0;
+                --text-secondary: #b0b0b0;
+                --text-preview: #c0c0c0;
+                --text-muted: #999;
+                --border-light: #2a2a4a;
+                --border-medium: #3a3a5a;
+                --accent-blue: #5dade2;
+                --accent-red: #e74c3c;
+                --shadow-color: rgba(0,0,0,0.3);
+                --logo-bg: #fff;
+                --logo-text: #000;
+                --highlight-bg: #b8860b;
+                --highlight-dark-bg: #fff3cd;
+                --search-bg: #16213e;
+                --search-border: #3a3a5a;
+                --toggle-bg: transparent;
+                --toggle-border: #5dade2;
+                --toggle-text: #5dade2;
+            }}
+        }}
+
         * {{
             box-sizing: border-box;
         }}
@@ -237,7 +350,8 @@ def generate_html_report(results, output_path):
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
-            background-color: #f5f5f5;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
         }}
         .logo {{
             display: flex;
@@ -250,67 +364,110 @@ def generate_html_report(results, output_path):
             justify-content: center;
             width: 80px;
             height: 80px;
-            background: #000;
+            background: var(--logo-bg);
             border-radius: 16px;
-            color: #fff;
+            color: var(--logo-text);
             font-size: 3.2rem;
             font-weight: 800;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1;
         }}
         .summary {{
-            background: #fff;
+            background: var(--bg-card);
             padding: 20px;
             border-radius: 8px;
-            margin-bottom: 30px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 10px;
+            box-shadow: 0 2px 4px var(--shadow-color);
+        }}
+        .meta {{
+            font-size: 0.85em;
+            color: var(--text-muted);
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border-light);
+        }}
+        .search-bar {{
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: var(--bg-primary);
+            padding: 10px 0 10px 0;
+            margin-bottom: 20px;
+        }}
+        .search-bar input {{
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 16px;
+            border: 2px solid var(--search-border);
+            border-radius: 8px;
+            background: var(--search-bg);
+            color: var(--text-primary);
+            outline: none;
+        }}
+        .search-bar input:focus {{
+            border-color: var(--accent-blue);
+        }}
+        .search-bar input::placeholder {{
+            color: var(--text-muted);
+        }}
+        .search-count {{
+            font-size: 0.85em;
+            color: var(--text-muted);
+            margin-top: 6px;
         }}
         .contact {{
-            background: #fff;
+            background: var(--bg-card);
             padding: 20px;
             margin-bottom: 20px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow-color);
         }}
         .contact-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-light);
             padding-bottom: 10px;
             margin-bottom: 15px;
         }}
         .contact-name {{
             font-size: 1.4em;
             font-weight: bold;
-            color: #333;
+            color: var(--text-primary);
         }}
         .contact-info {{
-            color: #666;
+            color: var(--text-secondary);
             font-size: 0.9em;
         }}
         .hit-count {{
-            background: #e74c3c;
+            background: var(--accent-red);
             color: white;
             padding: 5px 15px;
             border-radius: 20px;
             font-weight: bold;
+            white-space: nowrap;
         }}
         .hit {{
-            background: #f9f9f9;
+            background: var(--bg-hit);
             padding: 15px;
             margin-bottom: 10px;
             border-radius: 4px;
-            border-left: 3px solid #3498db;
+            border-left: 3px solid var(--accent-blue);
         }}
         .hit-preview {{
-            color: #444;
+            color: var(--text-preview);
             margin-bottom: 10px;
             font-size: 0.95em;
         }}
+        .hit-preview mark {{
+            background: var(--highlight-bg);
+            color: inherit;
+            padding: 1px 2px;
+            border-radius: 2px;
+        }}
         .hit-link {{
             display: inline-block;
-            color: #3498db;
+            color: var(--accent-blue);
             text-decoration: none;
             font-size: 0.85em;
         }}
@@ -318,32 +475,67 @@ def generate_html_report(results, output_path):
             text-decoration: underline;
         }}
         .no-results {{
-            color: #999;
+            color: var(--text-muted);
             font-style: italic;
         }}
-        .footer {{
-            margin-top: 40px;
-            padding-top: 20px;
-            border-top: 1px solid #ddd;
-            text-align: center;
-            color: #666;
-            font-size: 0.9em;
+        .hits-toggle {{
+            display: inline-block;
+            margin-top: 8px;
+            padding: 6px 14px;
+            font-size: 0.85em;
+            color: var(--toggle-text);
+            background: var(--toggle-bg);
+            border: 1px solid var(--toggle-border);
+            border-radius: 4px;
+            cursor: pointer;
         }}
-        .footer a {{
-            color: #3498db;
-            text-decoration: none;
+        .hits-toggle:hover {{
+            opacity: 0.8;
         }}
-        .footer a:hover {{
-            text-decoration: underline;
+        .hits-hidden {{
+            display: none;
+        }}
+
+        @media (max-width: 600px) {{
+            body {{
+                padding: 10px;
+            }}
+            .contact-header {{
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }}
+            .contact-name {{
+                font-size: 1.1em;
+            }}
+            .hit {{
+                padding: 10px;
+            }}
+            .hit-preview {{
+                font-size: 0.85em;
+            }}
         }}
     </style>
 </head>
 <body>
+<header>
     {logo_html}
+</header>
 
+<main>
     <div class="summary">
-        <strong>Total contacts searched:</strong> {len(results)}<br>
-        <strong>Contacts with mentions:</strong> {contacts_with_mentions}
+        <strong>Total contacts searched:</strong> {total_searched}<br>
+        <strong>Contacts with mentions:</strong> {contacts_with_mentions}<br>
+        <strong>Total hits:</strong> {total_hits:,}
+        {'<br><em>Note: Search was interrupted. This is a partial report.</em>' if was_interrupted else ''}
+        <div class="meta">
+            Generated on {timestamp} &middot; {total_searched} of {total_contacts} contacts searched
+        </div>
+    </div>
+
+    <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="Filter contacts by name, company, or position..." aria-label="Filter contacts">
+        <div class="search-count" id="searchCount">Showing {contacts_with_mentions} of {contacts_with_mentions} contacts</div>
     </div>
 """
 
@@ -357,8 +549,10 @@ def generate_html_report(results, output_path):
         if result['company']:
             contact_info.append(html.escape(result['company']))
 
+        search_data = f"{result['name']} {result['position']} {result['company']}".lower()
+
         html_content += f"""
-    <div class="contact">
+    <div class="contact" data-search="{html.escape(search_data)}">
         <div class="contact-header">
             <div>
                 <div class="contact-name">{html.escape(result['name'])}</div>
@@ -369,7 +563,8 @@ def generate_html_report(results, output_path):
 """
 
         if result['hits']:
-            for hit in result['hits']:
+            visible_count = 3
+            for idx, hit in enumerate(result['hits']):
                 preview = hit.get('content_preview') or (hit.get('content') or '')[:500]
                 file_path = hit.get('file_path', '')
                 if file_path:
@@ -379,11 +574,23 @@ def generate_html_report(results, output_path):
                 else:
                     pdf_url = ''
 
+                highlighted_preview = highlight_name_in_preview(
+                    preview, result['first_name'], result['last_name']
+                )
+
+                hidden_class = ' hits-hidden' if idx >= visible_count else ''
+
                 html_content += f"""
-        <div class="hit">
-            <div class="hit-preview">{html.escape(preview)}</div>
-            {f'<a class="hit-link" href="{html.escape(pdf_url)}" target="_blank">View PDF: {html.escape(file_path)}</a>' if pdf_url else ''}
+        <div class="hit{hidden_class}"{' data-extra="true"' if idx >= visible_count else ''}>
+            <div class="hit-preview">{highlighted_preview}</div>
+            {f'<a class="hit-link" href="{html.escape(pdf_url)}" target="_blank" rel="noopener noreferrer">View PDF: {html.escape(file_path)}</a>' if pdf_url else ''}
         </div>
+"""
+
+            extra_count = len(result['hits']) - visible_count
+            if extra_count > 0:
+                html_content += f"""
+        <button class="hits-toggle" onclick="toggleHits(this)" aria-expanded="false">Show {extra_count} more hit{'s' if extra_count != 1 else ''}</button>
 """
         else:
             html_content += """
@@ -394,10 +601,55 @@ def generate_html_report(results, output_path):
     </div>
 """
 
-    html_content += """
-    <div class="footer">
-        Epstein files indexed by <a href="https://dugganusa.com" target="_blank">DugganUSA.com</a>
+    html_content += f"""
+</main>
+
+<footer>
+    <div style="margin-top:40px;padding-top:20px;border-top:1px solid var(--border-medium);text-align:center;color:var(--text-secondary);font-size:0.9em;">
+        Epstein files indexed by <a href="https://dugganusa.com" target="_blank" rel="noopener noreferrer" style="color:var(--accent-blue);text-decoration:none;">DugganUSA.com</a>
     </div>
+</footer>
+
+<script>
+function toggleHits(btn) {{
+    var card = btn.closest('.contact');
+    var extras = card.querySelectorAll('[data-extra="true"]');
+    var expanded = btn.getAttribute('aria-expanded') === 'true';
+    for (var i = 0; i < extras.length; i++) {{
+        extras[i].classList.toggle('hits-hidden');
+    }}
+    expanded = !expanded;
+    btn.setAttribute('aria-expanded', String(expanded));
+    if (expanded) {{
+        btn.textContent = 'Show fewer hits';
+    }} else {{
+        var count = extras.length;
+        btn.textContent = 'Show ' + count + ' more hit' + (count !== 1 ? 's' : '');
+    }}
+}}
+
+(function() {{
+    var input = document.getElementById('searchInput');
+    var countEl = document.getElementById('searchCount');
+    var cards = document.querySelectorAll('.contact');
+    var totalCards = cards.length;
+
+    input.addEventListener('input', function() {{
+        var query = this.value.toLowerCase();
+        var shown = 0;
+        for (var i = 0; i < cards.length; i++) {{
+            var searchData = cards[i].getAttribute('data-search') || '';
+            if (!query || searchData.indexOf(query) !== -1) {{
+                cards[i].style.display = '';
+                shown++;
+            }} else {{
+                cards[i].style.display = 'none';
+            }}
+        }}
+        countEl.textContent = 'Showing ' + shown + ' of ' + totalCards + ' contacts';
+    }});
+}})();
+</script>
 </body>
 </html>
 """
@@ -512,17 +764,21 @@ To export your X/Twitter following list:
     print("Searching Epstein files API...")
     print("(Press Ctrl+C to stop and generate a partial report)\n")
     results = []
+    failed_searches = []
+    was_interrupted = False
+    is_tty = sys.stdout.isatty()
 
     delay = 0.25
 
     try:
         for i, contact in enumerate(contacts):
-            print(f"  [{i+1}/{len(contacts)}] {contact['full_name']}", end='', flush=True)
-
             search_result, delay = search_epstein_files(contact['full_name'], delay)
             total_mentions = search_result['total_hits']
 
-            print(f" -> {total_mentions} hits")
+            print_progress_bar(i + 1, len(contacts), contact['full_name'], total_mentions, is_tty)
+
+            if search_result.get('error'):
+                failed_searches.append((contact['full_name'], search_result['error']))
 
             results.append({
                 'name': contact['full_name'],
@@ -539,18 +795,24 @@ To export your X/Twitter following list:
                 time.sleep(delay)
 
     except KeyboardInterrupt:
-        print("\n\nSearch interrupted by user (Ctrl+C).")
+        was_interrupted = True
+        if is_tty:
+            print()  # Clear progress bar line
+        print("\nSearch interrupted by user (Ctrl+C).")
         if not results:
             print("No results collected yet. Exiting without generating report.")
             sys.exit(0)
         print(f"Generating partial report with {len(results)} of {len(contacts)} contacts searched...")
 
+    if is_tty:
+        print()  # Newline after progress bar
+
     # Sort by mentions (descending)
     results.sort(key=lambda x: x['total_mentions'], reverse=True)
 
     # Write HTML report
-    print(f"\nWriting report to: {args.output}")
-    generate_html_report(results, args.output)
+    print(f"Writing report to: {args.output}")
+    generate_html_report(results, args.output, total_contacts=len(contacts), was_interrupted=was_interrupted)
 
     # Print summary
     contacts_with_mentions = [r for r in results if r['total_mentions'] > 0]
@@ -566,6 +828,13 @@ To export your X/Twitter following list:
             print(f"  {r['total_mentions']:6,} - {r['name']}")
     else:
         print("\nNo contacts found in the Epstein files.")
+
+    if failed_searches:
+        print(f"\nFailed searches ({len(failed_searches)}):")
+        for name, error in failed_searches[:10]:
+            print(f"  {name}: {error}")
+        if len(failed_searches) > 10:
+            print(f"  ... and {len(failed_searches) - 10} more")
 
     print(f"\nFull report saved to: {args.output}")
 
