@@ -1,4 +1,6 @@
-![EpsteIn](assets/logo.png)
+<p align="center">
+  <img src="assets/logo.svg" alt="EpsteIn" width="80">
+</p>
 
 Search the publicly released Epstein court documents for mentions of your LinkedIn connections and/or X/Twitter following list.
 
