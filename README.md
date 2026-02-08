@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="EpsteIn" width="80">
+  <img src="assets/logo-linkedin.svg" alt="EpsteIn LinkedIn" width="80">&nbsp;&nbsp;
+  <img src="assets/logo.svg" alt="EpsteIn X" width="80">
 </p>
 
 Search the publicly released Epstein court documents for mentions of your LinkedIn connections and/or X/Twitter following list.
