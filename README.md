@@ -100,14 +100,28 @@ The script generates an HTML report (`EpsteIn.html` by default) that you can ope
 
 The report contains:
 
-- **Summary**: Total contacts searched and how many had mentions
+- **Summary**: Total contacts searched, contacts with mentions, total hits, and generation timestamp
+- **Search/filter bar**: Sticky search input to filter contacts by name, company, or position in real time
 - **Contact cards**: Each contact with mentions is displayed as a card showing:
   - Name, position, and company
   - Total number of mentions across all documents
-  - Excerpts from each matching document
+  - Excerpts from each matching document with **name highlighting**
   - Links to the source PDFs on justice.gov
+  - Collapsible hit cards — first 3 hits shown, rest behind a "Show N more hits" toggle
 
 Contacts are sorted by number of mentions (highest first).
+
+### Report Features
+
+- **Dark mode**: Automatically follows your OS dark/light mode preference
+- **Mobile responsive**: Stacks layout for small screens (under 600px)
+- **Accessible**: Semantic HTML landmarks, `aria-expanded` on toggles, `rel="noopener noreferrer"` on external links
+
+### CLI Progress
+
+- A live progress bar is displayed during search: `[######----] 60% (30/50) Name -> hits`
+- Falls back to line-by-line output when piped (non-TTY)
+- Failed searches are summarized at the end
 
 ## Notes
 
