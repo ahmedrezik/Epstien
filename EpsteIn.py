@@ -11,7 +11,6 @@ Prerequisites:
 """
 
 import argparse
-import base64
 import csv
 import html
 import json
@@ -218,15 +217,9 @@ def search_epstein_files(name, delay):
 def generate_html_report(results, output_path):
     contacts_with_mentions = len([r for r in results if r['total_mentions'] > 0])
 
-    # Read and encode logo as base64 data URI, or fall back to text header
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(script_dir, 'assets', 'logo.png')
-    if os.path.exists(logo_path):
-        with open(logo_path, 'rb') as f:
-            logo_base64 = base64.b64encode(f.read()).decode('utf-8')
-        logo_html = f'<img src="data:image/png;base64,{logo_base64}" alt="EpsteIn" class="logo">'
-    else:
-        logo_html = '<h1 class="logo" style="text-align: center;">EpsteIn</h1>'
+    logo_html = """<div class="logo" role="img" aria-label="EpsteIn">
+        <span class="logo-icon">E</span>
+    </div>"""
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -247,9 +240,23 @@ def generate_html_report(results, output_path):
             background-color: #f5f5f5;
         }}
         .logo {{
-            display: block;
-            max-width: 300px;
+            display: flex;
+            justify-content: center;
             margin: 0 auto 20px auto;
+        }}
+        .logo-icon {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 80px;
+            height: 80px;
+            background: #000;
+            border-radius: 16px;
+            color: #fff;
+            font-size: 3.2rem;
+            font-weight: 800;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1;
         }}
         .summary {{
             background: #fff;
