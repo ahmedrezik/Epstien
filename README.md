@@ -96,7 +96,6 @@ python EpsteIn.py --connections Connections.csv --x-following following.js --x-b
 
 The script generates an HTML report (`EpsteIn.html` by default) that you can open in any web browser.
 
-![A screenshot of the HTML report.](assets/screenshot.png)
 
 The report contains:
 
